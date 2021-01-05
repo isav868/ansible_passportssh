@@ -31,12 +31,13 @@
         src: files/passport_ssh_auth.sh
         dest: /home/passport/bin
         owner: root
-        group: root
+        group: passport
         mode: '0750'
     - name: copy passport subs to passport home
       copy:
         src: files/passport_subs
         dest: /home/passport/.passport_subs
+        group: passport
         mode: '0640'
     - name: set passport homedir perms
       file:
