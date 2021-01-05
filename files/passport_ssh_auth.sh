@@ -50,6 +50,7 @@ fi
 USERNAME=$1
 
 check_utilities
+check_usercache_db
 
 if [ -d "${WORKDIR}" ]; then
 	cd "${WORKDIR}"
