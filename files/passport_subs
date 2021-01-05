@@ -1,6 +1,5 @@
 WORKDIR="/var/cache/passport_hydra"
 CURLOPTS='--connect-timeout 5 --max-time 15 --silent -H "Accept: application/json"'
-CURLOPTS="--connect-timeout 5 --max-time 15 --silent"
 TOKENFILE="${WORKDIR}/token"
 VALIDTIME=60
 ALLOWEDGROUPS="developer"
