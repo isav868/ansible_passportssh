@@ -58,7 +58,7 @@
       lineinfile:
         path: /etc/ssh/sshd_config
         line: 'AuthorizedKeysCommand /home/passport/bin/passport_ssh_auth.sh'
-      when: authkcmd.found
+      when: not authkcmd.found
     - name: create condition for sshd authorized keys command user
       lineinfile:
         path: /etc/ssh/sshd_config
@@ -71,7 +71,7 @@
       lineinfile:
         path: /etc/ssh/sshd_config
         line: 'AuthorizedKeysCommandUser passport'
-      when: authkcusr.found
+      when: not authkcusr.found
     - name: restart sshd
       service:
         name: sshd
