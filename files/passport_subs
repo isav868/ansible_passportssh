@@ -1,0 +1,323 @@
+WORKDIR="/var/cache/passport_hydra"
+CURLOPTS='--connect-timeout 5 --max-time 15 --silent -H "Accept: application/json"'
+CURLOPTS="--connect-timeout 5 --max-time 15 --silent"
+TOKENFILE="${WORKDIR}/token"
+VALIDTIME=60
+ALLOWEDGROUPS="developer"
+TOKEN_ENDPOINT="https://passport.hydra.office.onix.ua/v1/oidc-provider/token"
+TOKEN_SCOPE="hydra_passport_find_users"
+USERS_ENDPOINT="https://passport.hydra.office.onix.ua/v1/api/users"
+USERFILE="${WORKDIR}/user.$$"
+USERCACHE="${WORKDIR}/usercache.db"
+CACHETTL=600
+TABLE="usercache"
+DBSCHEMA="username TEXT PRIMARY KEY, passport BOOLEAN, isactive BOOLEAN, sshkey TEXT, lastaccess INT"
+DBFIELDS="username,                  passport,         isactive,         sshkey,      lastaccess"
+MINUID=3000
+P_USER="passport"
+P_GROUP="passport"
+USERSHELL="/bin/bash"
+
+
+get_token () {
+	curl ${CURLOPTS} -o "${TOKENFILE}" -d "grant_type=client_credentials" -d "client_id=${CLIENT_ID}" -d "client_secret=${CLIENT_SECRET}" -d "scope=${TOKEN_SCOPE}" "${TOKEN_ENDPOINT}"
+}
+
+check_token () {
+	if [ -r "${TOKENFILE}" ]; then
+		#
+		# token file is readable, proceeding with getting an expiration period:
+		#
+	        EXP_PERIOD=`jq -r '.expires_in' ${TOKENFILE} 2>/dev/null`
+	        if [ "${EXP_PERIOD}" != "null" ] && [ "${EXP_PERIOD}" != 0 ]; then
+	                TOKEN_START=`stat --format "%Y" "${TOKENFILE}"`
+	                NOW=`date "+%s"`
+	                TOKEN_TIMELEFT=$((NOW - TOKEN_START))
+			#
+	                # check if token has validity for at least VALIDTIME seconds
+	                # otherwise re-get the token
+			#
+	                if [ $((EXP_PERIOD - TOKEN_TIMELEFT)) -le ${VALIDTIME} ]; then
+				#
+	                        # token will expire soon, so re-get it
+				#
+	                        get_token
+	                fi
+	        else
+			#
+	                # token file is invalid, delete it
+			#
+	                rm -f "${TOKENFILE}"
+	                logger "$0 WARNING: token file ${TOKENFILE} is apparently invalid"
+	        fi
+	else
+		#
+	        # token file does not exist, get it
+		#
+	        get_token
+	fi
+
+	TOKEN=`jq -r '.access_token' "${TOKENFILE}" 2>/dev/null`
+	if [ "${TOKEN}" = "" ] || [ "${TOKEN}" = "null" ]; then
+	        logger "$0 FATAL ERROR: TOKEN is null"
+	        exit 1
+	fi
+}
+
+create_usercache_db () {
+	rm -f "${USERCACHE}"
+	sqlite "${USERCACHE}" "CREATE TABLE ${TABLE} ( ${DBSCHEMA} );"
+	if [ $? -ne 0 ]; then
+		#
+		# ERROR: Cannot create database
+		#
+		logger "$0 FATAL ERROR: Cannot create database: ${USERCACHE}"
+		exit 1
+	fi
+
+	logger "$0 NOTICE: database ${USERCACHE} was created successfuly"
+	chmod g+w "${USERCACHE}"
+}
+
+check_usercache_db () {
+	if [ -r "${USERCACHE}" ]; then
+		#
+	        # check if database is healthy
+		#
+	        DBHEALTH=`sqlite "${USERCACHE}" "PRAGMA integrity_check;" 2>/dev/null`
+	        if [ "${DBHEALTH}" != "ok" ]; then
+			#
+	                # database is corrupted, re-create it
+			#
+	                logger "$0 WARNING: Database is corrupted. Recreating the database."
+	                create_usercache_db
+	        fi
+
+		#
+	        # check if current DB schema is present
+		#
+	        sqlite "${USERCACHE}" "SELECT COUNT(*) FROM ${TABLE};" >/dev/null 2>/dev/null
+	        if [ $? -ne 0 ]; then
+			#
+	                # schema is not present, re-create the DB
+			#
+	                logger "$0 WARNING: Wrong database schema. Recreating the database."
+	                create_usercache_db
+	        fi
+	else
+			#
+	                # DB is not present, create the DB
+			#
+	                create_usercache_db
+	fi
+}
+
+check_utilities () {
+	curl -h >/dev/null 2>&1
+	if [ $? -ne 0 ]; then
+	        logger "$0 FATAL ERROR: curl not found"
+	        exit 1
+	fi
+
+	echo '{"test":0}' | jq '.test' >/dev/null  2>&1
+	if [ $? -ne 0 ]; then
+	        logger "$0 FATAL ERROR: jq not found"
+	        exit 1
+	fi
+
+	sqlite /dev/null "SELECT DATE('now');" >/dev/null  2>&1
+	if [ $? -ne 0 ]; then
+	        logger "$0 FATAL ERROR: sqlite not found"
+	        exit 1
+	fi
+}
+
+validate_username () {
+	:
+	#if [[ "${USERNAME}" =~ "^[a-z_]([a-z0-9_-]{0,31}|[a-z0-9_-]{0,30}\$)$" ]]; then
+	#       :
+        	#
+        	# username is ok
+        	#
+	#else
+	#       logger "$0 FATAL ERROR: username: ${USERNAME} has failed validation"
+	#       exit 1
+	#fi
+}
+
+create_workdir () {
+	[ ! -d "${WORKDIR}" ] && mkdir -p "${WORKDIR}" 2>/dev/null
+	if [ ! -d "${WORKDIR}" ]; then
+		#
+	        # ERROR: Cannot create workdir
+		#
+	        logger "$0 FATAL ERROR: Cannot create workdir: ${WORKDIR}"
+	        exit 1
+	else
+	        logger "$0 NOTICE: workdir created: ${WORKDIR}"
+	fi
+
+	chgrp "${P_GROUP}" "${WORKDIR}"
+	chmod g+s "${WORKDIR}"
+}
+
+get_user_data () {
+	curl -G ${CURLOPTS} -H "Authorization: Bearer ${TOKEN}" -H "Accept: application/json" --data-urlencode "where={\"username\": \"${USERNAME}\"}" "${USERS_ENDPOINT}" -o "${USERFILE}"
+
+	if [ $? -ne 0 ]; then
+		#
+	        # curl error
+		#
+	        logger "$0 ERROR: curl error or time-out. Script exitcode 1"
+	        rm -f "${USERFILE}"
+	        exit 1
+	fi
+
+	#
+	# assertion for file readability
+	#
+	if [ ! -r "${USERFILE}" ]; then
+		#
+	        # file isn't readable
+		#
+	        logger "$0 FATAL ERROR: Cannot process ${USERFILE}: file isn't readable"
+	        rm -f "${USERFILE}"
+	        exit 1
+	fi
+}
+
+check_user () {
+	TOTALCOUNT=`jq -r '.meta.totalCount' "${USERFILE}" 2>/dev/null`
+	#
+	# Empty or zero TOTALCOUNT means there is no such user in the passport.hydra DB
+	#
+	if [ "${TOTALCOUNT}" = "" ] || [ "${TOTALCOUNT}" = "null" ] || [ "${TOTALCOUNT}" -eq 0 ] 2>/dev/null; then
+	        #
+	        # no such username in passport.hydra: update the cache
+	        #
+	        COUNT=`sqlite "${USERCACHE}" "SELECT COUNT(*) FROM ${TABLE} WHERE username='${USERNAME}';" 2>/dev/null`
+	        if [ "${COUNT}" -eq 0 ] 2>/dev/null; then
+	                #
+	                # user not in cache, insert user record:
+	                #
+	                sqlite "${USERCACHE}" "INSERT INTO ${TABLE} VALUES('${USERNAME}', 0, 0, '', strftime('%s', 'now'));" 2>/dev/null
+			if [ $? -ne 0 ]; then
+				logger "$0 WARNING: sqlite was unable to INSERT default values INTO table ${TABLE} for ${USERNAME}, DB: ${USERCACHE}"
+			fi
+	        else
+	                #
+	                # user in cache, update the cache:
+	                #
+	                sqlite "${USERCACHE}" "UPDATE ${TABLE} SET passport = 0, lastaccess = strftime('%s', 'now') WHERE username='${USERNAME}';" 2>/dev/null
+			if [ $? -ne 0 ]; then
+				logger "$0 WARNING: sqlite was unable to UPDATE passport, lastaccess in table ${TABLE} for ${USERNAME}, DB: ${USERCACHE}"
+			fi
+	        fi
+	        #
+	        # we're done here
+	        #
+	        rm -f ${USERFILE}
+	        exit 1
+	else
+	        :
+	        #
+	        # user in passport.hydra database, process user data
+	        #
+	fi
+}
+
+update_user_cache () {
+	COUNT=`sqlite "${USERCACHE}" "SELECT COUNT(*) FROM ${TABLE} WHERE username='${USERNAME}';" 2>/dev/null`
+	if [ "${COUNT}" -eq 0 ] 2>/dev/null; then
+	        #
+	        # user not in cache, insert user record, set passport=1:
+	        #
+	        sqlite "${USERCACHE}" "INSERT INTO ${TABLE} VALUES('${USERNAME}', 1, 0, '', strftime('%s', 'now'));"
+		if [ $? -ne 0 ]; then
+			logger "$0 WARNING: sqlite was unable to INSERT passport=1 INTO table ${TABLE} for ${USERNAME}, DB: ${USERCACHE}"
+		fi
+	else
+	        #
+	        # user in cache, update lastaccess:
+	        #
+	        sqlite "${USERCACHE}" "UPDATE ${TABLE} SET lastaccess = strftime('%s', 'now') WHERE username='${USERNAME}';"
+		if [ $? -ne 0 ]; then
+			logger "$0 WARNING: sqlite was unable to UPDATE lastaccess in table ${TABLE} for ${USERNAME}, DB: ${USERCACHE}"
+		fi
+	fi
+
+	#
+	# update isActive status for this user
+	#
+	if [ `jq -r '.items[0].isActive' "${USERFILE}" 2>/dev/null` = "true" ]; then
+	        #
+	        # user is active: update status and create 
+	        #
+	        sqlite "${USERCACHE}" "UPDATE ${TABLE} SET isactive = 1 WHERE username='${USERNAME}';"
+		if [ $? -ne 0 ]; then
+			logger "$0 WARNING: sqlite was unable to UPDATE isactive=1 in table ${TABLE} for ${USERNAME}, DB: ${USERCACHE}"
+		fi
+	        ISACTIVE=true
+	else
+	        #
+	        # user is not active: update status
+	        #
+	        sqlite "${USERCACHE}" "UPDATE ${TABLE} SET isactive = 0 WHERE username='${USERNAME}';"
+		if [ $? -ne 0 ]; then
+			logger "$0 WARNING: sqlite was unable to UPDATE isactive=0 in table ${TABLE} for ${USERNAME}, DB: ${USERCACHE}"
+		fi
+	        ISACTIVE=false
+	fi
+}
+
+check_group_membership () {
+	GROUPNUMBER=`jq '.items[0].groups' "${USERFILE}" | jq length`
+	ALLOWEDGROUP=false
+	#
+	# test if GROUPNUMBER is actually a number
+	#
+	if [ -n "${GROUPNUMBER}" ] && [ "${GROUPNUMBER}" -eq "${GROUPNUMBER}" ] 2>/dev/null; then
+		#
+	        # enumerate the groups
+		#
+	        while [ ${GROUPNUMBER} -ne 0 ]; do
+	                ((GROUPNUMBER--))
+	                GRN=${GROUPNUMBER}
+	                GRP=`jq -r ".items[0].groups[${GRN}]" ${USERFILE} 2>/dev/null`
+	                echo $ALLOWEDGROUPS | grep -w -q ${GRP}
+	                if [ $? -eq 0 ]; then
+	                        ALLOWEDGROUP=true
+	                fi
+	        done
+	else
+		#
+	        # cannot get the number of groups from userfile
+		#
+		logger "$0 ERROR: cannot get the groups from userfile. Exiting."
+	        rm -f "${USERFILE}"
+	        exit 1
+	fi
+}
+
+validate_key_format () {
+	if [ "${ALLOWEDGROUP}" = "true" ] && [ "${ISACTIVE}" = "true" ]; then
+	        KEY=`jq -r '.items[0].sshPublicKey' ${USERFILE} 2>/dev/null`
+
+	        #
+	        # check key for validity by matching it against the regular expression
+	        #
+	        if [[ ${KEY} =~ "AAAA" ]]; then
+	                #
+	                # key assumed to be valid: update the cache and create the user
+	                #
+	                sqlite "${USERCACHE}" "UPDATE ${TABLE} SET sshkey = '${KEY}'  WHERE username='${USERNAME}';"
+			if [ $? -ne 0 ]; then
+				logger "$0 WARNING: sqlite was unable to UPDATE sshkey in table ${TABLE} for ${USERNAME}, DB: ${USERCACHE}"
+			fi
+			KEY_STATUS=ok
+	        else
+			KEY_STATUS=invalid
+	        fi
+	fi
+}
+

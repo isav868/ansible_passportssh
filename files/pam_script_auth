@@ -1,0 +1,141 @@
+#!/usr/bin/env bash
+#
+# Script for /etc/passwd user entry and a homedir provisioning via passport.hydra OpenID.
+# All incoming user login attempts are cached locally in the sqlite database for CACHETTL seconds.
+#
+# External commands required: jq, curl, sqlite
+#
+#
+# ivan.savytskyi
+#	* 30/12/2020
+#	* 03/01/2021
+#	* 04/01/2021
+
+umask 0007
+
+SUBS="/home/passport/.passport_subs"
+CREDS="/home/passport/.passport_creds"
+
+if [ -r "${SUBS}" ]; then
+	#
+	# source initial values and functions
+	#
+	. "${SUBS}"
+else
+	logger "$0 FATAL ERROR: Unable to read ${SUBS} file"
+	exit 1
+fi
+
+if [ -r "${CREDS}" ]; then
+	#
+	# source credentails
+	#
+	. "${CREDS}"
+else
+	logger "$0 FATAL ERROR: Unable to read ${CREDS} file"
+	exit 1
+fi
+
+########################################################################
+########################## Script starts below #########################
+########################################################################
+
+#
+# Process only non-empty ssh auth requests
+#
+if [ "${PAM_TYPE}" != "auth" ] || [ "${PAM_SERVICE}" != "sshd" ] || [ "${PAM_USER}" = "" ]; then
+	exit 1
+else
+	USERNAME="${PAM_USER}"
+fi
+
+#
+# exit if user already exists
+#
+id "${USERNAME}" >/dev/null 2>&1
+if [ $? -eq 0 ]; then
+	HOMEDIR=`grep "${USERNAME}" /etc/passwd | awk -F ":" '{print $6}'`
+	if [ -n "${HOMEDIR}" ] && [ ! -d "${HOMEDIR}" ]; then
+		logger "$0 NOTICE: User ${USERNAME} exists, but there is no home directory. Exiting."
+	fi
+	exit 1
+fi
+
+validate_username
+check_utilities
+
+create_workdir
+cd "${WORKDIR}"
+check_usercache_db
+
+#########################################################################
+# Check the user access time.
+# Exit if the user is in cache and the cache is not expired.
+# Continue if the user is not in cache.
+#########################################################################
+
+CACHETIME=`sqlite "${USERCACHE}" "SELECT strftime('%s', 'now') - lastaccess FROM ${TABLE} WHERE username='${USERNAME}';"`
+
+if [ -n "${CACHETIME}" ] && [ "${CACHETIME}" -eq "${CACHETIME}" ] 2>/dev/null; then
+	#
+	# user in cache, check expiration
+	#
+	if [ "${CACHETIME}" -le "${CACHETTL}" ]; then
+		#
+		# cache is not expired, exit
+		#
+		exit 1
+	else
+		:
+		#
+		# cache expired: refresh the data from passport.hydra
+		#
+	fi
+else
+	:
+	#
+	# user not in cache, request data from passport hydra
+	#
+fi
+
+#########################################################################
+# Check if token file exists and it isn't too old,
+# otherwise (re)get the token from passport.hydra
+#########################################################################
+check_token
+get_user_data
+
+#########################################################################
+# Validate user attributes
+#########################################################################
+check_user
+update_user_cache
+check_group_membership
+validate_key_format
+
+#########################################################################
+# If all above is ok, finally create the user
+#########################################################################
+if [ "${KEY_STATUS}" = "ok" ]; then
+	PASSPORT_ID=`jq -r '.items[0].id' "${USERFILE}"`
+	if [ -n "${PASSPORT_ID}" ] && [ "${PASSPORT_ID}" -eq "${PASSPORT_ID}" ] 2>/dev/null; then
+		#
+		# user has a valid ID in the passport DB
+		#
+		USERID=$((MINUID + PASSPORT_ID))
+		useradd -m --uid "${USERID}" -G sudo --shell "${USERSHELL}" "${USERNAME}"
+		if [ $? -eq 0 ]; then
+			logger "$0 user ${USERNAME} has been created with uid ${USERID}"
+		else
+			logger "$0 ERROR: unable to create the user ${USERNAME} with uid ${USERID}, useradd exit code: $?"
+		fi
+	else
+		logger "$0 ERROR: User ${USERNAME} does not have a valid Passport ID"
+	fi
+else
+	logger "$0 ERROR: ssh key for ${USERNAME} is not valid, user will not be created"
+fi
+
+rm -f ${USERFILE}
+exit 1
+
