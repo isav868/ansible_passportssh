@@ -46,34 +46,24 @@
         owner: root
         group: passport
         mode: '0750'
-    - name: create condition for sshd authorized keys command
-      lineinfile:
-        path: /etc/ssh/sshd_config
-        regexp: '^AuthorizedKeysCommand\s.*$'
-        state: absent
-      check_mode: yes
-      changed_when: false
-      register: authkcmd
+    - name: create sshd_config backup
+      copy:
+        src: /etc/ssh/sshd_config
+        dest: /etc/ssh/sshd_config.backup
     - name: set sshd authorized keys command
       lineinfile:
-        path: /etc/ssh/sshd_config
+        path: /etc/ssh/sshd_config_new
         line: 'AuthorizedKeysCommand /home/passport/bin/passport_ssh_auth.sh'
-      when: not authkcmd.found
-    - name: create condition for sshd authorized keys command user
-      lineinfile:
-        path: /etc/ssh/sshd_config
-        regexp: '^AuthorizedKeysCommandUser\.s*$'
-        state: absent
-      check_mode: yes
-      changed_when: false
-      register: authkcusr
     - name: set sshd authorized keys command user
       lineinfile:
-        path: /etc/ssh/sshd_config
+        path: /etc/ssh/sshd_config_new
         line: 'AuthorizedKeysCommandUser passport'
-      when: not authkcusr.found
-    - name: restart sshd
-      service:
-        name: sshd
-        state: restarted
+        validate: sshd -t -f %s
+      notify:
+        - reload sshd
 
+  handlers:
+  - name: reload sshd
+   service:
+     name: sshd
+     state: reloaded
