@@ -50,14 +50,14 @@
       shell: ansible-galaxy install willshersystems.sshd
     - name: configure sshd for auth via passport
         lineinfile:
-          - name: authorized keys command
-              dest: /etc/ssh/sshd_config
-              regexp: '^#AuthorizedKeysCommand none$'
-              line: 'AuthorizedKeysCommand: /home/passport/bin/passport_ssh_auth.sh'
-          - name: authorized keys command user
-              dest: /etc/ssh/sshd_config
-              regexp: '^#AuthorizedKeysCommandUser nobody$'
-              line: 'AuthorizedKeysCommandUser: passport'
+          name: authorized keys command
+            dest: /etc/ssh/sshd_config
+            regexp: '^#AuthorizedKeysCommand none$'
+            line: 'AuthorizedKeysCommand: /home/passport/bin/passport_ssh_auth.sh'
+          name: authorized keys command user
+            dest: /etc/ssh/sshd_config
+            regexp: '^#AuthorizedKeysCommandUser nobody$'
+            line: 'AuthorizedKeysCommandUser: passport'
     - name: restart sshd
       service:
         name: sshd
