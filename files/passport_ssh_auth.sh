@@ -88,16 +88,13 @@ if [ -n "${CACHETIME}" ] && [ "${CACHETIME}" -eq "${CACHETIME}" ] 2>/dev/null; t
 			if [ $? -ne 0 ]; then
 				logger "$0 WARNING: sqlite failure on SELECT sshkey FROM ${TABLE} WHERE username='${USERNAME}'"
 			fi
+			exit 1
 		else
-			:
 			#
 			# user access is not granted
 			#
+			exit 1
 		fi
-		#
-		# we're done here
-		#
-		exit 0
 	else
 		:
 		#
