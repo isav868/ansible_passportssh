@@ -52,11 +52,11 @@
         dest: /etc/ssh/sshd_config.backup
     - name: set sshd authorized keys command
       lineinfile:
-        path: /etc/ssh/sshd_config_new
+        path: /etc/ssh/sshd_config
         line: 'AuthorizedKeysCommand /home/passport/bin/passport_ssh_auth.sh'
     - name: set sshd authorized keys command user
       lineinfile:
-        path: /etc/ssh/sshd_config_new
+        path: /etc/ssh/sshd_config
         line: 'AuthorizedKeysCommandUser passport'
         validate: sshd -t -f %s
       notify:
