@@ -4,7 +4,45 @@
   become: true
 
   tasks:
-    - name: install jq
+    - name: install necessary utils
       package:
-        name: jq
+        name: 
+          - jq
+          - sqlite
+          - libpam-script
+    - name: add passport user
+      user:
+       name: passport
+       comment: Hydra Passport
+    - name: copy libpam-script file for passport
+      copy:
+        src: files/pam_script_auth
+        dest: /usr/share/libpam-script
+        mode: '0755'
+    - name: create bin dir for passport
+      file:
+        path: /home/passport/bin
+        state: directory
+        owner: root
+        group: passport
+        mode: '0750'
+    - name: copy passport_ssh_auth.sh file to passport/bin
+      copy:
+        src: files/passport_ssh_auth.sh
+        dest: /home/passport/bin
+        owner: root
+        group: root
+        mode: '0750'
+    - name: copy passport subs to passport home
+      copy:
+        src: files/passport_subs
+        dest: /home/passport/.passport_subs
+        mode: '0640'
+    - name: set passport homedir perms
+      file:
+        path: /home/passport
+        state: directory
+        owner: root
+        group: passport
+        mode: '0750'
 
