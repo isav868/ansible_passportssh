@@ -46,4 +46,17 @@
         owner: root
         group: passport
         mode: '0750'
+    - name: add willshersystems.sshd module to ansible
+      shell: ansible-galaxy install willshersystems.sshd
+    - name: configure sshd for auth via passport
+      include_role: 
+        name: willshersystems.sshd
+      vars:
+        sshd:
+          AuthorizedKeysCommand: /home/passport/bin/passport_ssh_auth.sh
+          AuthorizedKeysCommandUser: passport
+    - name: restart sshd
+      service:
+        name: sshd
+        state: restarted
 
